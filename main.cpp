@@ -129,7 +129,7 @@ void processMessage(uWS::WebSocket<SSL, true>* ws, std::string_view& raw_message
     response["id"] = ++messageId;
     response["name"] = userData->name;
     response["topic"] = topic;
-    response["message"] = msg["message"].dump();
+    response["message"] = msg["message"];
 
     dispatchMessage(std::make_shared<std::string>(userData->channel), std::make_shared<std::string>(response.dump()));    
 }
