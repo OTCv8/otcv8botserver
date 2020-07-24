@@ -37,6 +37,9 @@ std::vector<std::mutex> mutexes(THREADS);
 std::vector<std::thread *> threads(THREADS, nullptr);
 std::vector<PerThreadData> threads_data(THREADS);
 
+std::mutex globalMutex;
+std::map<std::string, std::multiset<std::string>> globalChannels;
+
 int64_t millis()
 {
 	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -105,6 +108,9 @@ void processMessage(uWS::WebSocket<SSL, true>* ws, std::string_view& raw_message
         }
         
         (*channels)[userData->channel].insert(ws);
+        globalMutex.lock();
+        globalChannels[userData->channel].insert(userData->name);
+        globalMutex.unlock();
         return;
     }
 
@@ -129,8 +135,23 @@ void processMessage(uWS::WebSocket<SSL, true>* ws, std::string_view& raw_message
     response["id"] = ++messageId;
     response["name"] = userData->name;
     response["topic"] = topic;
+    
+    // special topics
+    if(topic == "list") { // list of all users
+        std::set<std::string> users;
+        globalMutex.lock();
+        auto it = globalChannels.find(userData->channel);
+        if(it != globalChannels.end()) {
+            users = std::set<std::string>(it->second.begin(), it->second.end());
+        }
+        globalMutex.unlock();
+        response["message"] = users;
+        ws->send(response.dump(), uWS::TEXT);
+        return;
+    }
+    
+    // relay message
     response["message"] = msg["message"];
-
     dispatchMessage(std::make_shared<std::string>(userData->channel), std::make_shared<std::string>(response.dump()));    
 }
 
@@ -157,7 +178,7 @@ int main()
                     connections += 1;
                 },
                 .message = [&channels](auto *ws, std::string_view message, uWS::OpCode opCode) {
-                    if(opCode != uWS::TEXT) {
+                    if(opCode != uWS::TEXT || message.size() > 64 * 1024) {
                         return;
                     }
                     
@@ -172,6 +193,7 @@ int main()
                 .ping = nullptr,
                 .pong = nullptr,                
                 .close = [&channels](uWS::WebSocket<SSL, true> *ws, int code, std::string_view message) {
+                    std::string& name = ((PerSocketData*)(ws->getUserData()))->name;
                     std::string& channel = ((PerSocketData*)(ws->getUserData()))->channel;
                     if(!channel.empty()) {
                         auto it = channels->find(channel);
@@ -182,6 +204,18 @@ int main()
                             }
                         }
                     }
+                    globalMutex.lock();
+                    auto it = globalChannels.find(channel);
+                    if(it != globalChannels.end()) {
+                        auto uit = it->second.find(name);
+                        if(uit != it->second.end()) {
+                            it->second.erase(uit);
+                        }
+                        if(it->second.empty()) {
+                            globalChannels.erase(it);
+                        }
+                    }                    
+                    globalMutex.unlock();
                     connections -= 1;
                 }
             }).listen(PORT, [index](auto *token) {

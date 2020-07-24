@@ -1,5 +1,5 @@
 # Websocket bot server for otclientv8
-## Version: 1.0
+## Version: 1.1
 
 ### DISCORD: https://discord.gg/feySup6
 ### Forum: http://otclient.net
@@ -17,7 +17,7 @@ g++ main.cpp -std=c++17 -Ofast uWebSockets/uSockets/uSockets.a -IuWebSockets/src
 ```
 
 ### Using it
-If you want to use your bot server in bot, before calling BotServer.init set BotServer.url, for example
+If you want to use your bot server in bot, before calling BotServer.init set BotServer.url, for example:
 ```
 BotServer.url = "ws://127.0.0.1:8000/"
 BotServer.init(name(), "test_channel")
