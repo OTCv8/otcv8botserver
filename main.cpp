@@ -1,5 +1,5 @@
   
-#include <uWebSockets/App.h>
+#include <App.h>
 #include "json.hpp"
 
 #include <chrono>
@@ -10,8 +10,9 @@
 #include <map>
 #include <set>
 #include <atomic>
+#include <ctime>
 
-const int THREADS = 8;
+const int THREADS = 2;
 const int PORT = 8000;
 const bool SSL = false;
 
@@ -23,6 +24,8 @@ struct PerSocketData {
     std::string channel;
     int64_t lastPing = 0;
     int64_t lastPingSent = 0;
+    int64_t packets = 0;
+    time_t packetsTime = 0;
 };
 
 struct PerThreadData {
@@ -30,8 +33,10 @@ struct PerThreadData {
     ChannelsMap* channels = nullptr;
 };
     
-std::atomic<int> connections = 0;
-std::atomic<int> exceptions = 0;
+std::atomic<int64_t> connections = 0;
+std::atomic<int64_t> exceptions = 0;
+std::atomic<int64_t> blocked = 0;
+std::atomic<int64_t> packets = 0;
 std::atomic<int64_t> messageId = 0;
 std::vector<std::mutex> mutexes(THREADS);
 std::vector<std::thread *> threads(THREADS, nullptr);
@@ -87,6 +92,7 @@ void sendPing()
 
 void processMessage(uWS::WebSocket<SSL, true>* ws, std::string_view& raw_message, ChannelsMap* channels) 
 {
+    packets += 1;
     PerSocketData* userData = (PerSocketData*)(ws->getUserData());
     auto msg = nlohmann::json::parse(raw_message);
     std::string type = msg["type"];
@@ -103,15 +109,35 @@ void processMessage(uWS::WebSocket<SSL, true>* ws, std::string_view& raw_message
         userData->lastPingSent = millis();
 
         if(userData->name.empty() || userData->channel.empty() || userData->name.size() > 30 || userData->channel.size() > 30) {
+            blocked += 1;
             ws->end();
             return;
         }
+
+        auto it = channels->find(userData->channel);
+        if(it != channels->end() && it->second.size() > 50) {
+            blocked += 1;
+            ws->end();
+            return;
+        } 
         
         (*channels)[userData->channel].insert(ws);
         globalMutex.lock();
         globalChannels[userData->channel].insert(userData->name);
         globalMutex.unlock();
         return;
+    }
+
+    if(userData->packetsTime < time(nullptr)) {
+        userData->packetsTime = time(nullptr) + 1;
+        userData->packets = 0;
+    }
+    userData->packets += 1;
+    // 100 packets per 2s
+    if(userData->packets > 100 || raw_message.size() > 8 * 1024) {
+        blocked += 1;
+        ws->end();
+        return;                                
     }
 
     if(type == "ping") {
@@ -171,7 +197,7 @@ int main()
             uWS::TemplatedApp<SSL>().ws<PerSocketData>("/*", {
                 .compression = uWS::SHARED_COMPRESSOR,
                 .maxPayloadLength = 64 * 1024,
-                .idleTimeout = 10,
+                .idleTimeout = 12,
                 .maxBackpressure = 256 * 1024,
                 .upgrade = nullptr,
                 .open = [](uWS::WebSocket<SSL, true> *ws) {
@@ -238,7 +264,7 @@ int main()
     bool working = true;
     while(working) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        std::cout << "Connections: " << connections << " Exceptions: " << exceptions << std::endl;
+        std::cout << "Connections: " << connections << " Packets: " << packets << " Exceptions: " << exceptions << " Blocked: " << blocked << std::endl;
         
         // send ping
         sendPing();
